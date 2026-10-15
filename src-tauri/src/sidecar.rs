@@ -104,6 +104,28 @@ fn wait_http(url: &str, timeout: Duration) -> Result<(), String> {
     Err(format!("timeout waiting for {url}"))
 }
 
+fn bin_name(stem: &str) -> String {
+    if cfg!(windows) {
+        format!("{stem}.exe")
+    } else {
+        stem.to_string()
+    }
+}
+
+fn with_runtime_path(cmd: &mut Command, embed_dir: &Path) {
+    if cfg!(windows) {
+        let mut path = embed_dir.as_os_str().to_owned();
+        path.push(";");
+        if let Some(old) = std::env::var_os("PATH") {
+            path.push(old);
+        }
+        cmd.env("PATH", path);
+    } else {
+        cmd.env("DYLD_LIBRARY_PATH", embed_dir);
+        cmd.env("DYLD_FALLBACK_LIBRARY_PATH", embed_dir);
+    }
+}
+
 fn pick(preferred: Option<u16>) -> Result<u16, String> {
     match preferred {
         Some(p) if p != 0 && !is_reserved(p) => Ok(p),
@@ -131,7 +153,7 @@ pub fn start_daemons(
     let grpc = free_port()?;
 
     let qbin = {
-        let bundled = resource_dir.join("embed-runtime").join("qdrant");
+        let bundled = resource_dir.join("embed-runtime").join(bin_name("qdrant"));
         if bundled.exists() {
             bundled
         } else {
@@ -143,7 +165,9 @@ pub fn start_daemons(
     }
     let qlog = File::create(data_dir.join("qdrant.log")).map_err(|e| e.to_string())?;
     let qerr = qlog.try_clone().map_err(|e| e.to_string())?;
-    let mut qchild = Command::new(&qbin)
+    let mut qcmd = Command::new(&qbin);
+    with_runtime_path(&mut qcmd, &resource_dir.join("embed-runtime"));
+    let mut qchild = qcmd
         .current_dir(data_dir)
         .env("QDRANT__SERVICE__HTTP_PORT", qport.to_string())
         .env("QDRANT__SERVICE__GRPC_PORT", grpc.to_string())
@@ -158,7 +182,7 @@ pub fn start_daemons(
         .map_err(|e| format!("could not start qdrant: {e}"))?;
 
     let embed_dir = resource_dir.join("embed-runtime");
-    let llama = embed_dir.join("llama-server");
+    let llama = embed_dir.join(bin_name("llama-server"));
     let model = resource_dir
         .join("models")
         .join("nomic-embed-text-v1.5.Q4_K_M.gguf");
@@ -170,10 +194,10 @@ pub fn start_daemons(
     }
     let elog = File::create(data_dir.join("embed.log")).map_err(|e| e.to_string())?;
     let eerr = elog.try_clone().map_err(|e| e.to_string())?;
-    let mut echild = Command::new(&llama)
-        .current_dir(&embed_dir)
-        .env("DYLD_LIBRARY_PATH", &embed_dir)
-        .env("DYLD_FALLBACK_LIBRARY_PATH", &embed_dir)
+    let mut ecmd = Command::new(&llama);
+    ecmd.current_dir(&embed_dir);
+    with_runtime_path(&mut ecmd, &embed_dir);
+    let mut echild = ecmd
         .arg("-m")
         .arg(&model)
         .arg("--host")
