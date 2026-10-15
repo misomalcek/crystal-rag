@@ -105,6 +105,8 @@ directory, and names ending in `_files`. Import edges are drawn for
 `import`, `from`, `require(`, and a Rust `mod` declaration when the target
 file is in the folder.
 
+The Windows installer workflow still runs actions that target Node 20. Update those action versions with the next release. Builds themselves stay on this machine.
+
 ## Build
 
 ```bash
