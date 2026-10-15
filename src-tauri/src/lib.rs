@@ -11,12 +11,11 @@ mod store;
 
 use census::{census_dir, is_text_ingest, walk_files};
 use entities::{
-    chat_with_context, distill, message_text, post_completion, probe_endpoint, tool_calls_from,
-    tools_refused, DistillDoc, Entity, EntityEdge,
+    chat_with_context, distill, probe_endpoint, DistillDoc, Entity, EntityEdge,
 };
 use extract::{chunk_text, ext_of, read_text, MAX_CHUNKS, MAX_CHUNKS_PER_FILE};
 use graph::{
-    blast, folder_graph, graft_chunks, graft_entities, hop, run_graph_tool, FolderGraph, IngestedChunk,
+    blast, folder_graph, graft_chunks, graft_entities, hop, FolderGraph, IngestedChunk,
 };
 use retrieve::{fuse_retrieve, ChunkRec, RetrieveReport};
 use serde::Serialize;
@@ -724,92 +723,6 @@ struct ChatReply {
     tools: bool,
 }
 
-fn graph_tools() -> Value {
-    json!([
-        {"type":"function","function":{
-            "name":"hop",
-            "description":"One step along crystal edges from a node id. Returns neighbor ids and labels.",
-            "parameters":{"type":"object","properties":{"focus":{"type":"string","description":"Node id: file path, path#chunk, or entity:slug"}},"required":["focus"]}
-        }},
-        {"type":"function","function":{
-            "name":"blast",
-            "description":"Walk the crystal from a node id up to depth steps (1 to 3, default 2).",
-            "parameters":{"type":"object","properties":{"focus":{"type":"string"},"depth":{"type":"integer"}},"required":["focus"]}
-        }},
-        {"type":"function","function":{
-            "name":"retrieve",
-            "description":"Search the ingested folder. Returns passages.",
-            "parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}
-        }}
-    ])
-}
-
-fn ids_of(v: &Value, key: &str) -> Vec<String> {
-    v.get(key)
-        .and_then(|x| x.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|n| n.get("id").and_then(|id| id.as_str()).map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn run_chat_tool(
-    name: &str,
-    args: &Value,
-    graph: Option<&FolderGraph>,
-    store: &Store,
-    folder: Option<&str>,
-    chunks: &[ChunkRec],
-    ents: &[Entity],
-    edges: &[EntityEdge],
-) -> (String, Vec<String>) {
-    match name {
-        "hop" | "blast" => {
-            let Some(g) = graph else {
-                return ("scan a folder first".into(), vec![]);
-            };
-            match run_graph_tool(name, args, g) {
-                Ok(v) => {
-                    let mut ids = ids_of(&v, if name == "hop" { "neighbors" } else { "nodes" });
-                    if let Some(focus) = args.get("focus").and_then(|f| f.as_str()) {
-                        ids.insert(0, focus.to_string());
-                    }
-                    (v.to_string(), ids)
-                }
-                Err(e) => (e, vec![]),
-            }
-        }
-        "retrieve" => {
-            let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            match fuse_retrieve(store, query, folder, chunks, ents, edges, 8) {
-                Ok(report) => {
-                    let mut ids = Vec::new();
-                    let mut lines = Vec::new();
-                    for h in &report.hits {
-                        ids.push(h.path.clone());
-                        ids.push(format!("{}#{}", h.path, h.chunk_index));
-                        lines.push(format!(
-                            "{}#{} raw {:.3} fused {} [{}]",
-                            h.path,
-                            h.chunk_index,
-                            h.score,
-                            h.rrf_score
-                                .map(|s| format!("{s:.4}"))
-                                .unwrap_or_else(|| "-".into()),
-                            h.preview.chars().take(160).collect::<String>()
-                        ));
-                    }
-                    (lines.join("\n"), ids)
-                }
-                Err(e) => (e, vec![]),
-            }
-        }
-        other => (format!("unknown tool {other}"), vec![]),
-    }
-}
-
 #[tauri::command]
 fn chat_ask(state: State<LabState>, question: String) -> Result<ChatReply, String> {
     let settings = state.settings.lock().map_err(|e| e.to_string())?.clone();
@@ -821,7 +734,6 @@ fn chat_ask(state: State<LabState>, question: String) -> Result<ChatReply, Strin
     let ents = state.entities.lock().map_err(|e| e.to_string())?.clone();
     let edges = state.entity_edges.lock().map_err(|e| e.to_string())?.clone();
     let folder = state.folder.lock().map_err(|e| e.to_string())?.clone();
-    let graph = state.graph.lock().map_err(|e| e.to_string())?.clone();
     let report = fuse_retrieve(
         &store,
         &question,
@@ -835,85 +747,25 @@ fn chat_ask(state: State<LabState>, question: String) -> Result<ChatReply, Strin
     for h in &report.hits {
         ctx.push_str(&format!("[{}#{}] {}\n", h.path, h.chunk_index, h.preview));
     }
-    let mut index = String::new();
-    if let Some(g) = &graph {
-        for n in g.nodes.iter().filter(|n| n.kind != "chunk").take(60) {
-            index.push_str(&format!("{} [{}]\n", n.id, n.label));
-        }
-    }
-    let mut messages = vec![
-        json!({
-            "role": "system",
-            "content": "Answer from this crystal. You may call hop, blast, and retrieve. Use only node ids from the list. Do not invent ids."
-        }),
-        json!({
-            "role": "user",
-            "content": format!("Nodes:\n{index}\nExcerpts:\n{ctx}\n\nQuestion: {question}")
-        }),
-    ];
-    let mut highlight = Vec::new();
-    let mut trace = Vec::new();
-    for round in 0..4 {
-        let body = json!({
-            "model": ep.model,
-            "messages": messages,
-            "tools": graph_tools(),
-            "tool_choice": "auto",
-            "max_tokens": 700
-        });
-        let posted = post_completion(&ep.url, &ep.api_key, body, ep.timeout_secs);
-        let completion = match posted {
-            Err(err) if round == 0 && tools_refused(&err) => {
-                trace.push("endpoint has no tools — answered from excerpts".into());
-                let answer = chat_with_context(&ep.url, &ep.api_key, &ep.model, &question, &ctx, ep.timeout_secs)?;
-                return Ok(ChatReply {
-                    answer,
-                    highlight,
-                    trace,
-                    tools: false,
-                });
-            }
-            Err(err) => return Err(err),
-            Ok(j) => j,
-        };
-        let message = completion["choices"][0]["message"].clone();
-        let calls = tool_calls_from(&message);
-        if calls.is_empty() {
-            let answer = message_text(&message);
-            if answer.is_empty() {
-                return Err("endpoint returned an empty answer".into());
-            }
-            highlight.sort();
-            highlight.dedup();
-            return Ok(ChatReply {
-                answer,
-                highlight,
-                trace,
-                tools: true,
-            });
-        }
-        messages.push(message);
-        for call in calls {
-            let (text, ids) = run_chat_tool(
-                &call.name,
-                &call.arguments,
-                graph.as_ref(),
-                &store,
-                folder.as_deref(),
-                &chunks,
-                &ents,
-                &edges,
-            );
-            trace.push(format!("{} {}", call.name, text.chars().take(160).collect::<String>()));
-            highlight.extend(ids);
-            messages.push(json!({
-                "role": "tool",
-                "tool_call_id": call.id,
-                "content": text,
-            }));
-        }
-    }
-    Err("endpoint kept calling tools without an answer".into())
+    let answer = chat_with_context(
+        &ep.url,
+        &ep.api_key,
+        &ep.model,
+        &question,
+        &ctx,
+        ep.timeout_secs,
+    )?;
+    let highlight: Vec<String> = report
+        .hits
+        .iter()
+        .map(|h| format!("{}#{}", h.path, h.chunk_index))
+        .collect();
+    Ok(ChatReply {
+        answer,
+        highlight,
+        trace: vec!["answered from excerpts".into()],
+        tools: false,
+    })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

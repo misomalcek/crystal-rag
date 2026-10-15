@@ -191,6 +191,9 @@ fn prefer_ipv4_loopback(url: &str) -> String {
 
 pub fn explain_endpoint_error(status: u16, body: &str) -> String {
     let lower = body.to_ascii_lowercase();
+    if status == 429 || status == 420 {
+        return "the endpoint is rate-limiting. Wait a moment, then ask once.".into();
+    }
     if status == 401 && lower.contains("bearer") {
         return "this endpoint wants a bearer token in the key field. A raw local model usually does not. The key stays in this app's settings. It is not part of the download.".into();
     }
@@ -942,6 +945,8 @@ mod tests {
         assert_eq!(message_text(&reasoned), "pong");
         let parts = json!({ "content": [{"type": "text", "text": "pong"}] });
         assert_eq!(message_text(&parts), "pong");
+        assert!(explain_endpoint_error(429, "slow").contains("rate-limiting"));
+        assert!(explain_endpoint_error(420, "calm").contains("rate-limiting"));
         assert!(tools_refused("endpoint HTTP 400: tools are not supported"));
         assert!(!tools_refused("endpoint HTTP 400: model is required"));
     }
