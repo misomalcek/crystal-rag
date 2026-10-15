@@ -1,4 +1,4 @@
-# crystal-lab
+# Crystal RAG
 
 Point at a folder. The app builds a 3D crystal from the files, embeds the
 text locally, and retrieves. Qdrant and the nomic embed model travel inside
@@ -53,9 +53,13 @@ You only need to do this once.
    edge weight.
 8. Optional OpenAI-compatible endpoint (cloud or local, same fields): assigns
    a type, may withhold a name from the verse without deleting it, and unlocks
-   ask-your-sources. It does not merge two different slugs. Saving or removing
-   an endpoint rebuilds the verse. A bad endpoint is an error and you stay in
-   default mode.
+   ask-your-sources. It does not merge two different slugs. Saving checks the
+   endpoint and keeps the current verse. Removing an endpoint rebuilds it
+   without the model. A bad endpoint is an error and you stay in default mode.
+   A raw local model often needs no key. Some servers want a bearer token in
+   the key field. That key stays on your machine. It is not in the download.
+   The timeout for one call is in the endpoint sheet. The first call to a
+   cold local model can take over a minute.
 
 Graph expansion is the Zep / Graphiti pattern: the graph produces a third
 ranked list, then RRF. This build does **RRF only** — not Zep's extra MMR

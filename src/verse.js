@@ -81,7 +81,7 @@ function edgeHex(e, a) {
 /**
  * Files on an outer shell; chunks orbit their parent.
  * Entities relax with degree-scaled repulsion (LinLog): `hubSpread` is the
- * same knob as Factorium's "hub spread (LinLog)". Floor is 1 — at 0 the
+ * same knob as hub spread. Floor is 1 — at 0 the
  * degree term vanishes and hubs fall back into one ball.
  */
 function layout3d(nodes, edges, hubSpread) {
@@ -228,21 +228,21 @@ function layout3d(nodes, edges, hubSpread) {
   }
 }
 
-function makeLabel(text) {
+function makeLabel(text, small) {
   const c = document.createElement('canvas');
-  c.width = 512;
-  c.height = 64;
+  c.width = small ? 384 : 512;
+  c.height = small ? 48 : 64;
   const ctx = c.getContext('2d');
-  ctx.clearRect(0, 0, 512, 64);
+  ctx.clearRect(0, 0, c.width, c.height);
   ctx.fillStyle = 'rgba(12,15,13,0.78)';
-  ctx.fillRect(0, 10, 512, 44);
+  ctx.fillRect(0, small ? 6 : 10, c.width, small ? 36 : 44);
   ctx.fillStyle = '#e8eee6';
-  ctx.font = '600 28px ui-sans-serif, system-ui, sans-serif';
-  ctx.fillText(text.replace(/\.[^.]+$/, '').slice(0, 36), 12, 42);
+  ctx.font = small ? '600 22px ui-sans-serif, system-ui, sans-serif' : '600 28px ui-sans-serif, system-ui, sans-serif';
+  ctx.fillText(String(text).replace(/\.[^.]+$/, '').slice(0, small ? 28 : 36), 10, small ? 32 : 42);
   const tex = new THREE.CanvasTexture(c);
   const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
-  spr.scale.set(22, 2.8, 1);
-  spr.position.y = 10;
+  spr.scale.set(small ? 14 : 22, small ? 1.8 : 2.8, 1);
+  spr.position.y = small ? 5 : 10;
   return spr;
 }
 
@@ -350,7 +350,11 @@ export function createVerse(canvas, { onSelect }) {
       wire.scale.setScalar(scale * 1.06);
       wire.raycast = () => {};
       group.add(wire);
-      const spr = makeLabel(node.label || node.id);
+      const spr = makeLabel(node.label || node.id, false);
+      spr.raycast = () => {};
+      group.add(spr);
+    } else {
+      const spr = makeLabel(node.label || node.id, true);
       spr.raycast = () => {};
       group.add(spr);
     }

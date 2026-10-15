@@ -168,8 +168,40 @@ pub fn near_pairs(names: &[String], vecs: &[Vec<f32>], threshold: f32) -> Vec<(u
     out
 }
 
+/// `localhost` is often ::1 first. Many local servers listen on 127.0.0.1 only.
+fn prefer_ipv4_loopback(url: &str) -> String {
+    let trimmed = url.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let scheme = if lower.starts_with("https://") {
+        "https://"
+    } else if lower.starts_with("http://") {
+        "http://"
+    } else {
+        return trimmed.to_string();
+    };
+    let rest = &lower[scheme.len()..];
+    if rest.starts_with("localhost") {
+        let after = &rest["localhost".len()..];
+        if after.is_empty() || after.starts_with(':') || after.starts_with('/') {
+            return format!("{scheme}127.0.0.1{after}");
+        }
+    }
+    trimmed.to_string()
+}
+
+pub fn explain_endpoint_error(status: u16, body: &str) -> String {
+    let lower = body.to_ascii_lowercase();
+    if status == 401 && lower.contains("bearer") {
+        return "this endpoint wants a bearer token in the key field. A raw local model usually does not. The key stays in this app's settings. It is not part of the download.".into();
+    }
+    format!(
+        "endpoint HTTP {status}: {}",
+        body.chars().take(400).collect::<String>()
+    )
+}
+
 fn completions_url(base: &str) -> String {
-    let b = base.trim().trim_end_matches('/');
+    let b = prefer_ipv4_loopback(base).trim_end_matches('/').to_string();
     if b.ends_with("/chat/completions") {
         b.to_string()
     } else if b.ends_with("/v1") {
@@ -179,7 +211,7 @@ fn completions_url(base: &str) -> String {
     }
 }
 
-pub fn probe_endpoint(url: &str, api_key: &str, model: &str) -> Result<(), String> {
+pub fn probe_endpoint(url: &str, api_key: &str, model: &str, timeout_secs: u64) -> Result<(), String> {
     let body = json!({
         "model": model,
         "messages": [
@@ -187,14 +219,15 @@ pub fn probe_endpoint(url: &str, api_key: &str, model: &str) -> Result<(), Strin
         ],
         "max_tokens": 8
     });
-    chat_raw(url, api_key, body)?;
+    chat_raw(url, api_key, body, timeout_secs)?;
     Ok(())
 }
 
-pub fn post_completion(url: &str, api_key: &str, body: Value) -> Result<Value, String> {
+pub fn post_completion(url: &str, api_key: &str, body: Value, timeout_secs: u64) -> Result<Value, String> {
     let endpoint = completions_url(url);
+    let secs = timeout_secs.clamp(30, 600);
     let mut req = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(45))
+        .timeout(std::time::Duration::from_secs(secs))
         .build()
         .post(&endpoint);
     if !api_key.trim().is_empty() {
@@ -204,10 +237,7 @@ pub fn post_completion(url: &str, api_key: &str, body: Value) -> Result<Value, S
     let status = resp.status();
     let text = resp.into_string().map_err(|e| e.to_string())?;
     if !(200..300).contains(&status) {
-        return Err(format!(
-            "endpoint HTTP {status}: {}",
-            text.chars().take(400).collect::<String>()
-        ));
+        return Err(explain_endpoint_error(status, &text));
     }
     serde_json::from_str(&text).map_err(|e| e.to_string())
 }
@@ -257,8 +287,8 @@ pub fn message_text(message: &Value) -> String {
         .to_string()
 }
 
-fn chat_raw(url: &str, api_key: &str, body: Value) -> Result<String, String> {
-    let j = post_completion(url, api_key, body)?;
+fn chat_raw(url: &str, api_key: &str, body: Value, timeout_secs: u64) -> Result<String, String> {
+    let j = post_completion(url, api_key, body, timeout_secs)?;
     let content = message_text(&j["choices"][0]["message"]);
     if content.is_empty() {
         return Err("endpoint returned an empty answer".into());
@@ -272,6 +302,7 @@ pub fn chat_with_context(
     model: &str,
     question: &str,
     context: &str,
+    timeout_secs: u64,
 ) -> Result<String, String> {
     let body = json!({
         "model": model,
@@ -281,7 +312,7 @@ pub fn chat_with_context(
         ],
         "max_tokens": 700
     });
-    chat_raw(url, api_key, body)
+    chat_raw(url, api_key, body, timeout_secs)
 }
 
 fn build_prompt(items: &[String]) -> String {
@@ -367,6 +398,7 @@ fn adjudicate_batch(
     url: &str,
     api_key: &str,
     model: &str,
+    timeout_secs: u64,
 ) -> Option<Vec<Verdict>> {
     let body = json!({
         "model": model,
@@ -376,7 +408,7 @@ fn adjudicate_batch(
         ],
         "max_tokens": 900
     });
-    let content = chat_raw(url, api_key, body).ok()?;
+    let content = chat_raw(url, api_key, body, timeout_secs).ok()?;
     parse_verdicts(&content, items)
 }
 
@@ -692,9 +724,9 @@ fn adjudicate(entities: &mut [Entity], ep: &crate::settings::Endpoint) {
     let inputs: Vec<String> = order.iter().map(|&i| entities[i].name.clone()).collect();
     let mut verdicts: HashMap<String, Verdict> = HashMap::new();
     for chunk in inputs.chunks(ADJUDICATION_BATCH) {
-        let mut v = adjudicate_batch(chunk, &ep.url, &ep.api_key, &ep.model);
+        let mut v = adjudicate_batch(chunk, &ep.url, &ep.api_key, &ep.model, ep.timeout_secs);
         if v.is_none() {
-            v = adjudicate_batch(chunk, &ep.url, &ep.api_key, &ep.model);
+            v = adjudicate_batch(chunk, &ep.url, &ep.api_key, &ep.model, ep.timeout_secs);
         }
         if let Some(batch) = v {
             for item in batch {
@@ -763,6 +795,16 @@ pub fn distill(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bearer_refusal_is_a_sentence() {
+        let msg = explain_endpoint_error(
+            401,
+            r#"{"error":{"message":"chat with write-gate ON requires a bearer token"}}"#,
+        );
+        assert!(msg.contains("bearer token"));
+        assert!(!msg.contains("HTTP 401"));
+    }
 
     #[test]
     fn shannon_is_a_candidate() {

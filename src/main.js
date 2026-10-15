@@ -34,10 +34,42 @@ function log(msg) {
   logEl.textContent = msg;
 }
 
+let waiting = false;
+let waitLabelText = '';
+let waitT0 = 0;
+let waitTimer = null;
+
+function setWaitLabel(label) {
+  waitLabelText = label;
+}
+
+function beginWait(label) {
+  waiting = true;
+  waitLabelText = label;
+  if (!waitT0) waitT0 = Date.now();
+  const tick = () => {
+    const s = Math.floor((Date.now() - waitT0) / 1000);
+    statusEl.className = 'wait';
+    statusEl.innerHTML = `<span class="spin"></span>${escapeHtml(waitLabelText)} ${s}s`;
+  };
+  tick();
+  clearInterval(waitTimer);
+  waitTimer = setInterval(tick, 250);
+}
+
+function endWait() {
+  waiting = false;
+  waitT0 = 0;
+  clearInterval(waitTimer);
+  waitTimer = null;
+  if (lastStatus) paintStatus(lastStatus);
+}
+
 function paintStatus(h) {
   lastStatus = h;
   const ep = h.endpoint ? ' · endpoint ●' : ' · endpoint ○';
   const line = `qdrant ${h.qdrant ? '●' : '○'}:${h.qdrant_port}  embed ${h.embed ? '●' : '○'}:${h.embed_port}  ${h.embed_model} ${h.embed_dims || '?'}d  ${h.collection} ${h.crystal_points}${ep}`;
+  if (waiting) return;
   statusEl.textContent = h.error ? `${line}  · ${h.error}` : line;
   const starting = h.error === 'starting local engines…';
   statusEl.className = h.qdrant && h.embed ? 'ok' : starting ? 'wait' : 'bad';
@@ -57,22 +89,57 @@ function setReady(on) {
   document.getElementById('ask').disabled = !canChat;
 }
 
-function renderSide(census) {
-  if (hits.length) {
-    sideEl.innerHTML = hits
-      .map((h) => {
-        const lists = (h.lists || []).map((x) => `<span class="tag">${x}</span>`).join('');
-        const rrf = h.rrf_score != null ? `rrf ${h.rrf_score.toFixed(4)} · ` : '';
-        return `<div class="hit">${lists}<b>${rrf}cos ${Number(h.score).toFixed(3)} · ${h.path}#${h.chunk_index}</b><p>${escapeHtml(h.preview)}</p></div>`;
-      })
-      .join('');
-    return;
-  }
-  if (!census) {
+const session = [];
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function renderMd(src) {
+  let s = escapeHtml(src);
+  s = s.replace(/^### (.+)$/gm, '<h4>$1</h4>');
+  s = s.replace(/^## (.+)$/gm, '<h3>$1</h3>');
+  s = s.replace(/^# (.+)$/gm, '<h3>$1</h3>');
+  s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+  s = s.replace(/^\* (.+)$/gm, '<li>$1</li>');
+  s = s.replace(/((?:<li>[\s\S]*?<\/li>\s*)+)/g, '<ul>$1</ul>');
+  s = s.replace(/\n{2,}/g, '<br><br>');
+  s = s.replace(/\n/g, '<br>');
+  return `<div class="md">${s}</div>`;
+}
+
+function chips(ids) {
+  return (ids || [])
+    .map((id) => `<button class="chip" type="button" data-node="${escapeHtml(id)}">${escapeHtml(id)}</button>`)
+    .join('');
+}
+
+function pushCard(title, plain, extraHtml) {
+  session.push({ title, plain, extraHtml: extraHtml || '' });
+  renderSession();
+  const last = sideEl.lastElementChild;
+  if (last) last.scrollIntoView({ block: 'end' });
+}
+
+function renderSession() {
+  if (!session.length) {
     sideEl.textContent = 'Pick a folder of notes or code.';
     return;
   }
-  sideEl.textContent = [
+  sideEl.innerHTML = session
+    .map(
+      (card, i) => `<div class="hit"><div class="top"><b>${escapeHtml(card.title)}</b><button class="iconmini" type="button" data-copy="${i}" title="Copy">⧉</button></div>${card.extraHtml || renderMd(card.plain)}</div>`,
+    )
+    .join('');
+}
+
+function censusText(census) {
+  return [
     `markdown ${census.markdown}`,
     `code ${census.code}`,
     `pdf ${census.pdf}`,
@@ -82,19 +149,46 @@ function renderSide(census) {
     `office ${census.office} (not ingested)`,
     `skipped ${census.skipped}`,
     census.truncated ? 'truncated' : '',
-    '',
     ...(census.samples || []),
   ]
     .filter((x) => x !== '')
     .join('\n');
 }
 
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+function selectNode(id) {
+  focus = id;
+  highlight = new Set([id]);
+  verse.setFocus(id);
+  verse.setHighlight(highlight);
+  document.getElementById('hop').disabled = !folder;
+  document.getElementById('blast').disabled = !folder;
+  showDetail(id);
 }
+
+sideEl.addEventListener('click', (e) => {
+  const node = e.target.closest('[data-node]');
+  if (node) {
+    selectNode(node.dataset.node);
+    return;
+  }
+  const copy = e.target.closest('[data-copy]');
+  if (!copy) return;
+  const text = session[Number(copy.dataset.copy)]?.plain || '';
+  navigator.clipboard.writeText(text).then(() => log('copied'));
+});
+
+function sessionMarkdown() {
+  return session.map((c) => `## ${c.title}\n\n${c.plain}\n`).join('\n');
+}
+
+document.getElementById('saveMd').addEventListener('click', () => {
+  const blob = new Blob([sessionMarkdown()], { type: 'text/markdown' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'crystal-rag-session.md';
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
 
 function weightLabel(rel, weight) {
   if (rel === 'conflicts_with') return `similarity ${(weight / 100).toFixed(2)}`;
@@ -178,12 +272,12 @@ flightBtn.addEventListener('click', () => {
 
 document.getElementById('pick').addEventListener('click', async () => {
   try {
-    log('choose a folder…');
+    beginWait('choosing a folder');
     const path = await invoke('pick_folder');
     folder = path;
     pathEl.textContent = path;
     loadTune();
-    log('scanning…');
+    setWaitLabel('scanning');
     const r = await invoke('scan_folder', { path });
     graph = r.graph;
     hits = [];
@@ -193,12 +287,14 @@ document.getElementById('pick').addEventListener('click', async () => {
     verse.setGraph(graph);
     verse.setFocus(null);
     verse.setHighlight(highlight);
-    renderSide(r.census);
+    session.length = 0;
+    pushCard('folder', censusText(r.census));
     const extra = graph.truncated ? ' · truncated at 400 nodes' : '';
     log(`${graph.nodes.length} nodes · ${graph.edges.length} edges${extra}`);
   } catch (err) {
     log(String(err));
   }
+  endWait();
 });
 
 let ingesting = false;
@@ -216,23 +312,26 @@ document.getElementById('ingest').addEventListener('click', async () => {
   const btn = document.getElementById('ingest');
   btn.textContent = 'Ingesting…';
   btn.disabled = true;
-  log('ingesting into local qdrant…');
+  beginWait('ingesting');
   try {
     const r = await invoke('ingest_folder', { path: folder });
     if (r.graph) {
       graph = r.graph;
       verse.setGraph(graph);
     }
-    log(
+    const summary =
       `upserted ${r.points} chunks from ${r.files} files → ${r.collection} (${r.crystal_points} total)` +
-        (r.graph ? `\nverse ${r.graph.nodes.length} nodes · ${r.graph.edges.length} edges` : '') +
-        `\nentities ${r.entity_stats?.visible ?? 0} · cross-file ${r.entity_stats?.cross_file ?? 0} · relates_to ${r.entity_stats?.relates_to ?? 0} · conflicts ${r.entity_stats?.conflicts ?? 0}` +
-        (r.skipped.length ? `\n${r.skipped.slice(0, 8).join('\n')}` : ''),
-    );
+      (r.graph ? `\nverse ${r.graph.nodes.length} nodes · ${r.graph.edges.length} edges` : '') +
+      `\nentities ${r.entity_stats?.visible ?? 0} · cross-file ${r.entity_stats?.cross_file ?? 0} · relates_to ${r.entity_stats?.relates_to ?? 0} · conflicts ${r.entity_stats?.conflicts ?? 0}` +
+      (r.skipped.length ? `\n${r.skipped.slice(0, 8).join('\n')}` : '');
+    pushCard('ingest', summary);
+    log('ingest done');
     paintStatus(await invoke('lab_status'));
   } catch (err) {
+    pushCard('ingest', String(err));
     log(String(err));
   }
+  endWait();
   ingesting = false;
   btn.textContent = 'Ingest';
   btn.disabled = !folder;
@@ -241,25 +340,33 @@ document.getElementById('ingest').addEventListener('click', async () => {
 document.getElementById('go').addEventListener('click', async () => {
   const query = document.getElementById('q').value.trim();
   if (!query || !folder) return;
+  beginWait('retrieving');
   try {
     const r = await invoke('retrieve', { query, folder, limit: 10 });
     hits = r.hits || [];
     highlight = new Set();
+    const ids = [];
     for (const h of hits) {
       highlight.add(h.path);
       highlight.add(`${h.path}#${h.chunk_index}`);
+      ids.push(`${h.path}#${h.chunk_index}`);
     }
     verse.setHighlight(highlight);
-    renderSide(null);
-    const extra = r.graph_only_files?.length
-      ? `\ngraph-only files: ${r.graph_only_files.join(', ')}`
-      : '';
-    log(
-      `retrieve ${hits.length}  vector ${r.via_vector} · lexical ${r.via_lexical} · graph ${r.via_graph}${extra}`,
+    const lines = hits.map((h) => {
+      const lists = (h.lists || []).join(' ');
+      const rrf = h.rrf_score != null ? `rrf ${Number(h.rrf_score).toFixed(4)} · ` : '';
+      return `${lists} ${rrf}cos ${Number(h.score).toFixed(3)} · ${h.path}#${h.chunk_index}\n${h.preview}`;
+    });
+    pushCard(
+      `retrieve · ${hits.length}`,
+      lines.join('\n\n') || '(none)',
+      chips(ids) + lines.map((line) => `<p>${escapeHtml(line)}</p>`).join(''),
     );
+    log(`retrieve ${hits.length} · vector ${r.via_vector} · lexical ${r.via_lexical} · graph ${r.via_graph}`);
   } catch (err) {
     log(String(err));
   }
+  endWait();
 });
 
 function tuneKey() {
@@ -307,43 +414,51 @@ document.getElementById('glow').addEventListener('input', onTune);
 document.getElementById('ask').addEventListener('click', async () => {
   const question = document.getElementById('chatq').value.trim();
   if (!question) return;
+  pushCard('you', question);
+  beginWait('asking');
   try {
-    log('asking…');
     const reply = await invoke('chat_ask', { question });
     const answer = typeof reply === 'string' ? reply : reply.answer;
-    sideEl.innerHTML = `<div class="hit"><b>answer</b><p style="white-space:pre-wrap">${escapeHtml(answer || '')}</p></div>`;
     if (reply.highlight?.length) {
       highlight = new Set(reply.highlight);
       verse.setHighlight(highlight);
     }
-    log((reply.trace || []).join('\n') || 'ask done');
+    pushCard('answer', answer || '', chips(reply.highlight) + renderMd(answer || ''));
+    log('ask done');
   } catch (err) {
     log(String(err));
   }
+  endWait();
 });
 
 document.getElementById('hop').addEventListener('click', async () => {
   if (!folder || !focus) return;
+  beginWait('hop');
   try {
     const ids = await invoke('hop_cmd', { focus });
     highlight = new Set([focus, ...ids]);
     verse.setHighlight(highlight);
-    log(`hop ${ids.length}: ${ids.join(', ') || '(none)'}`);
+    pushCard(`hop · ${ids.length}`, ids.join('\n') || '(none)', chips(ids));
+    log(`hop ${ids.length}`);
   } catch (err) {
     log(String(err));
   }
+  endWait();
 });
 
 document.getElementById('blast').addEventListener('click', async () => {
   if (!folder || !focus) return;
+  beginWait('blast');
   try {
     const ids = await invoke('blast_cmd', { focus });
     highlight = new Set([focus, ...ids]);
     verse.setHighlight(highlight);
-    log(`blast depth 2 · ${ids.length} nodes`);
+    pushCard(`blast · ${ids.length}`, ids.join('\n') || '(none)', chips(ids));
+    log(`blast ${ids.length}`);
   } catch (err) {
     log(String(err));
   }
+  endWait();
 });
 
 document.getElementById('btnEndpoint').addEventListener('click', async () => {
@@ -351,6 +466,7 @@ document.getElementById('btnEndpoint').addEventListener('click', async () => {
   document.getElementById('epUrl').value = s.endpoint?.url || '';
   document.getElementById('epKey').value = s.endpoint?.api_key || '';
   document.getElementById('epModel').value = s.endpoint?.model || '';
+  document.getElementById('epTimeout').value = String(s.endpoint?.timeout_secs || 180);
   show(document.getElementById('endpointSheet'), true);
 });
 document.getElementById('btnPorts').addEventListener('click', async () => {
@@ -375,11 +491,12 @@ document.getElementById('welcomeNo').addEventListener('click', async () => {
 });
 document.getElementById('epSave').addEventListener('click', async () => {
   try {
-    log('checking endpoint…');
+    beginWait('checking endpoint');
     const saved = await invoke('save_endpoint', {
       url: document.getElementById('epUrl').value,
       apiKey: document.getElementById('epKey').value,
       model: document.getElementById('epModel').value,
+      timeoutSecs: Number(document.getElementById('epTimeout').value) || 180,
     });
     show(document.getElementById('endpointSheet'), false);
     paintStatus(await invoke('lab_status'));
@@ -388,10 +505,11 @@ document.getElementById('epSave').addEventListener('click', async () => {
       verse.setGraph(graph);
     }
     const s = saved.entity_stats || {};
-    log(`endpoint saved — visible ${s.visible ?? 0} · withheld ${s.withheld ?? 0} · conflicts ${s.conflicts ?? 0}`);
+    log(s.deferred ? 'endpoint saved' : 'endpoint saved');
   } catch (err) {
     log(String(err));
   }
+  endWait();
 });
 document.getElementById('epClear').addEventListener('click', async () => {
   try {
@@ -433,12 +551,19 @@ async function refreshStatus() {
 
 listen('engines', (ev) => {
   const payload = ev.payload;
-  if (!ingesting) log(payload === 'ready' ? 'local engines ready' : String(payload));
+  if (payload === 'ready') {
+    if (waiting && waitLabelText.startsWith('loading')) endWait();
+    if (!ingesting) log('local engines ready');
+  } else if (!ingesting) {
+    beginWait('loading engines');
+    log(String(payload));
+  }
   refreshStatus();
 }).catch(() => {});
 
 listen('ingest-progress', (ev) => {
-  log(String(ev.payload));
+  if (waiting) setWaitLabel(String(ev.payload));
+  else log(String(ev.payload));
 }).catch(() => {});
 
 const bootPoll = setInterval(async () => {
@@ -453,5 +578,5 @@ invoke('get_settings')
     if (!s.welcome_seen) show(document.getElementById('welcome'), true);
   })
   .catch(() => {});
-renderSide(null);
+renderSession();
 verse.resize();

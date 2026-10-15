@@ -46,8 +46,36 @@ pub fn read_text(path: &Path) -> Result<String, String> {
     Ok(raw)
 }
 
+fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<String>() {
+        return s.clone();
+    }
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        return (*s).to_string();
+    }
+    "the reader stopped".into()
+}
+
+fn pdf_skip_reason(msg: &str) -> String {
+    if msg.contains("color_space") || msg.contains("DeviceN") {
+        return "unsupported color space".into();
+    }
+    let one = msg.lines().next().unwrap_or(msg).trim();
+    let short: String = one.chars().take(120).collect();
+    if short.is_empty() {
+        "the reader stopped".into()
+    } else {
+        short
+    }
+}
+
 fn pdf_text(path: &Path) -> Result<String, String> {
-    pdf_extract::extract_text(path).map_err(|e| format!("pdf: {e}"))
+    let owned = path.to_path_buf();
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pdf_extract::extract_text(&owned))) {
+        Ok(Ok(text)) => Ok(text),
+        Ok(Err(e)) => Err(format!("pdf: {e}")),
+        Err(payload) => Err(format!("skipped — {}", pdf_skip_reason(&panic_text(payload)))),
+    }
 }
 
 /// Split on paragraph boundaries where possible; hard-cut when a block is larger
@@ -153,6 +181,18 @@ mod tests {
         let chunks = chunk_text(&text);
         assert!(!chunks.is_empty());
         assert!(chunks.iter().all(|c| c.is_char_boundary(0) || c.is_empty()));
+    }
+
+    #[test]
+    fn broken_pdf_is_an_error_not_a_panic() {
+        let dir = std::env::temp_dir().join("crystal-rag-bad-pdf");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bad.pdf");
+        std::fs::write(&path, b"%PDF-1.4 not a real file").unwrap();
+        let err = read_text(&path).unwrap_err();
+        assert!(err.starts_with("pdf:") || err.starts_with("skipped"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

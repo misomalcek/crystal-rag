@@ -1,4 +1,4 @@
-//! Reciprocal Rank Fusion — same algorithm as factorium `rrf.ts`.
+//! Reciprocal Rank Fusion. Rank only, k = 60. Cormack, Clarke, Buettcher, 2009.
 //!
 //! Scores from different retrievers are not comparable. RRF uses position
 //! only: `score = Σ 1/(k + rank)`. k=60 is Cormack et al. 2009.

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>crystal-lab</title>
+    <title>Crystal RAG</title>
     <style>
       :root {
         --bg: #111412; --fg: #e8eee6; --muted: #8a938c; --gold: #d4a84b;
@@ -21,6 +21,10 @@
       #status.ok { color: var(--green); }
       #status.bad { color: var(--red); }
       #status.wait { color: var(--gold); }
+      .spin { display: inline-block; width: 10px; height: 10px; margin-right: 6px;
+        border: 2px solid var(--line); border-top-color: var(--gold); border-radius: 50%;
+        animation: spin 0.8s linear infinite; vertical-align: -1px; }
+      @keyframes spin { to { transform: rotate(360deg); } }
       .iconbtn { width: 36px; height: 36px; padding: 0; display: grid; place-items: center;
         background: var(--panel); border: 1px solid var(--line); color: var(--fg); cursor: pointer; }
       #btnEndpoint { border-radius: 18px; }
@@ -53,9 +57,21 @@
       main > aside { border-left: 1px solid var(--line); padding: 12px 16px; overflow: auto; }
       aside h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
         color: var(--muted); margin: 0 0 8px; }
-      .hit { margin: 0 0 10px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
-      .hit b { color: var(--gold); font-weight: 600; font-size: 12px; }
-      .hit p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+      .hit { margin: 0 0 10px; padding: 8px; border: 1px solid var(--line); border-radius: 6px;
+        overflow-wrap: anywhere; word-break: break-word; }
+      .hit .top { display: flex; gap: 6px; align-items: flex-start; }
+      .hit .top b { flex: 1; color: var(--gold); font-weight: 600; font-size: 12px; }
+      .hit p, .md, .md p, .md li { margin: 4px 0 0; font-size: 12px; color: var(--muted);
+        overflow-wrap: anywhere; word-break: break-word; }
+      .md h3, .md h4 { margin: 8px 0 2px; font-size: 13px; color: var(--fg); }
+      .md ul { margin: 4px 0; padding-left: 16px; }
+      .md code { font: 11px ui-monospace, monospace; color: #c5cdc6; }
+      .chip { display: inline-block; margin: 2px 4px 0 0; padding: 1px 6px; border: 1px solid var(--line);
+        border-radius: 4px; background: transparent; color: #22d3ee; font: 11px ui-monospace, monospace;
+        cursor: pointer; overflow-wrap: anywhere; }
+      .iconmini { padding: 0 6px; font-size: 12px; }
+      #sideHead { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+      #sideHead h2 { flex: 1; margin: 0; }
       .tag { font: 10px ui-monospace, monospace; color: #22d3ee; margin-right: 6px; }
       .detail { position: absolute; top: 12px; right: 12px; z-index: 4; width: min(340px, 92%);
         max-height: calc(100% - 24px); overflow: auto; background: #161a17;
@@ -91,10 +107,10 @@
   </head>
   <body>
     <header>
-      <h1>crystal-lab</h1>
+      <h1>Crystal RAG</h1>
       <div id="status">starting…</div>
       <button id="btnEndpoint" class="iconbtn" type="button" title="Endpoint">🔌</button>
-      <button id="btnPorts" class="iconbtn" type="button" title="Ports">🎚</button>
+      <button id="btnPorts" class="iconbtn" type="button" title="Ports">⚙</button>
     </header>
     <div class="row">
       <button id="pick" type="button">Choose a folder</button>
@@ -129,7 +145,10 @@
         <aside id="detail" class="detail hidden"></aside>
       </div>
       <aside>
-        <h2>census / hits</h2>
+        <div id="sideHead">
+          <h2>session</h2>
+          <button id="saveMd" class="iconmini" type="button" title="Download session as Markdown">md</button>
+        </div>
         <div id="side"></div>
       </aside>
     </main>
@@ -138,7 +157,7 @@
     <div id="welcome" class="overlay">
       <div class="sheet">
         <h3>Do you have an OpenAI-compatible endpoint?</h3>
-        <p>Cloud or local. Without one, crystal-lab still links names across your files. With one, it assigns types and you can ask questions. A near-duplicate is flagged, not merged.</p>
+        <p>Cloud or local. Without one, Crystal RAG still links names across your files. With one, it assigns types and you can ask questions. A near-duplicate is flagged, not merged.</p>
         <div class="actions">
           <button id="welcomeYes" class="primary" type="button">Yes, let me set it up</button>
           <button id="welcomeNo" type="button">No, continue</button>
@@ -149,13 +168,15 @@
     <div id="endpointSheet" class="overlay">
       <div class="sheet">
         <h3>Endpoint</h3>
-        <p>One URL. Cloud and local use the same fields.</p>
+        <p>OpenAI-compatible URL. Leave the key empty when the server does not ask for one. The key stays in this app. It is not in the download. A cold local model can take over a minute. The timeout is how long one call may run.</p>
         <label>URL</label>
-        <input id="epUrl" placeholder="http://127.0.0.1:11434/v1" />
-        <label>API key (optional for local)</label>
-        <input id="epKey" placeholder="sk-…" />
+        <input id="epUrl" placeholder="http://127.0.0.1:8080/v1" />
+        <label>Bearer token</label>
+        <input id="epKey" placeholder="leave empty when the server does not ask" />
         <label>Model name</label>
-        <input id="epModel" placeholder="llama3.2" />
+        <input id="epModel" placeholder="local" />
+        <label>Timeout (seconds)</label>
+        <input id="epTimeout" type="number" min="30" max="600" value="180" />
         <div class="actions">
           <button id="epSave" class="primary" type="button">Save</button>
           <button id="epClear" type="button">Remove</button>

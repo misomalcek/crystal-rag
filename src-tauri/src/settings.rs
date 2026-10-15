@@ -1,11 +1,29 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Endpoint {
     pub url: String,
     pub api_key: String,
     pub model: String,
+    /// How long one chat call may run. A cold local model can sit past a minute.
+    #[serde(default = "default_timeout")]
+    pub timeout_secs: u64,
+}
+
+pub fn default_timeout() -> u64 {
+    180
+}
+
+impl Default for Endpoint {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            api_key: String::new(),
+            model: String::new(),
+            timeout_secs: default_timeout(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -83,6 +101,7 @@ mod tests {
             url: "http://127.0.0.1:11434/v1".into(),
             api_key: String::new(),
             model: "llama".into(),
+            timeout_secs: 180,
         });
         s.save(&dir).unwrap();
         let loaded = Settings::load(&dir);

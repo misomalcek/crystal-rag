@@ -140,28 +140,32 @@ fn save_endpoint(
     url: String,
     api_key: String,
     model: String,
+    timeout_secs: Option<u64>,
 ) -> Result<EndpointResult, String> {
     let url = url.trim().to_string();
     let model = model.trim().to_string();
     if url.is_empty() || model.is_empty() {
         return Err("URL and model name are required".into());
     }
-    probe_endpoint(&url, &api_key, &model)?;
+    let timeout_secs = timeout_secs.unwrap_or(180).clamp(30, 600);
+    // Probe only. Naming runs on the next ingest, not on save.
+    probe_endpoint(&url, &api_key, &model, timeout_secs)?;
     let mut s = state.settings.lock().map_err(|e| e.to_string())?;
     s.welcome_seen = true;
     s.endpoint = Some(Endpoint {
         url,
         api_key,
         model,
+        timeout_secs,
     });
     s.save(&state.data_dir)?;
     let cloned = s.clone();
     drop(s);
-    let (graph, entity_stats) = rebuild_entities(&state)?;
+    let graph = state.graph.lock().map_err(|e| e.to_string())?.clone();
     Ok(EndpointResult {
         settings: cloned,
         graph,
-        entity_stats,
+        entity_stats: json!({ "deferred": true }),
     })
 }
 
@@ -857,11 +861,11 @@ fn chat_ask(state: State<LabState>, question: String) -> Result<ChatReply, Strin
             "tool_choice": "auto",
             "max_tokens": 700
         });
-        let posted = post_completion(&ep.url, &ep.api_key, body);
+        let posted = post_completion(&ep.url, &ep.api_key, body, ep.timeout_secs);
         let completion = match posted {
             Err(err) if round == 0 && tools_refused(&err) => {
                 trace.push("endpoint has no tools — answered from excerpts".into());
-                let answer = chat_with_context(&ep.url, &ep.api_key, &ep.model, &question, &ctx)?;
+                let answer = chat_with_context(&ep.url, &ep.api_key, &ep.model, &question, &ctx, ep.timeout_secs)?;
                 return Ok(ChatReply {
                     answer,
                     highlight,
