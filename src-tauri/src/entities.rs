@@ -217,9 +217,11 @@ pub fn probe_endpoint(url: &str, api_key: &str, model: &str, timeout_secs: u64) 
         "messages": [
             {"role": "user", "content": "Reply with the single word pong."}
         ],
-        "max_tokens": 8
+        "max_tokens": 256
     });
-    chat_raw(url, api_key, body, timeout_secs)?;
+    // A 200 is enough to keep the URL and key. A reasoning model can spend the
+    // reply before any plain word, and that must not throw the settings away.
+    post_completion(url, api_key, body, timeout_secs)?;
     Ok(())
 }
 
@@ -277,14 +279,38 @@ pub fn tool_calls_from(message: &Value) -> Vec<ToolCall> {
         .collect()
 }
 
+fn piece_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|p| {
+                p.as_str()
+                    .or_else(|| p.get("text").and_then(|t| t.as_str()))
+                    .or_else(|| p.get("content").and_then(|t| t.as_str()))
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    }
+}
+
 pub fn message_text(message: &Value) -> String {
-    message
-        .get("content")
-        .and_then(|v| v.as_str())
-        .or_else(|| message.get("reasoning_content").and_then(|v| v.as_str()))
-        .unwrap_or("")
-        .trim()
-        .to_string()
+    let mut out = Vec::new();
+    if let Some(content) = message.get("content") {
+        let text = piece_text(content);
+        if !text.trim().is_empty() {
+            out.push(text);
+        }
+    }
+    for key in ["reasoning", "reasoning_content"] {
+        if let Some(text) = message.get(key).and_then(|v| v.as_str()) {
+            if !text.trim().is_empty() {
+                out.push(text.to_string());
+            }
+        }
+    }
+    out.join("\n").trim().to_string()
 }
 
 fn chat_raw(url: &str, api_key: &str, body: Value, timeout_secs: u64) -> Result<String, String> {
@@ -912,6 +938,10 @@ mod tests {
         assert_eq!(calls[0].name, "hop");
         assert_eq!(calls[0].arguments["focus"], "entity:shannon");
         assert!(message_text(&message).is_empty());
+        let reasoned = json!({ "content": null, "reasoning": "pong" });
+        assert_eq!(message_text(&reasoned), "pong");
+        let parts = json!({ "content": [{"type": "text", "text": "pong"}] });
+        assert_eq!(message_text(&parts), "pong");
         assert!(tools_refused("endpoint HTTP 400: tools are not supported"));
         assert!(!tools_refused("endpoint HTTP 400: model is required"));
     }
