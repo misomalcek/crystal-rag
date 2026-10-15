@@ -24,18 +24,21 @@ jobs:
           curl.exe -L -o llama.zip "https://github.com/ggml-org/llama.cpp/releases/download/b11669/llama-b11669-bin-win-cpu-x64.zip"
           Expand-Archive llama.zip -DestinationPath llama-win
           Get-ChildItem llama-win -Recurse -File | Copy-Item -Destination $rt -Force
+          $vs = "C:\Program Files\Microsoft Visual Studio\2022\Enterprise"
           $crt = $null
-          foreach ($root in @("C:\Program Files\Microsoft Visual Studio\2022","C:\Program Files (x86)\Microsoft Visual Studio\2022")) {
-            if (-not (Test-Path $root)) { continue }
-            foreach ($edition in Get-ChildItem $root -Directory) {
-              $hit = Get-ChildItem (Join-Path $edition.FullName "VC\Redist\MSVC\*\x64\Microsoft.VC143.CRT") -Directory -ErrorAction SilentlyContinue |
-                Sort-Object FullName -Descending | Select-Object -First 1
-              if ($hit) { $crt = $hit; break }
-            }
-            if ($crt) { break }
+          $redist = Get-ChildItem "$vs\VC\Redist\MSVC" -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+          if ($redist) {
+            $try = Join-Path $redist.FullName "x64\Microsoft.VC143.CRT"
+            if (Test-Path $try) { $crt = $try }
           }
-          if (-not $crt) { throw "Visual C++ runtime not found on the runner" }
-          Copy-Item (Join-Path $crt.FullName "*.dll") $rt -Force
+          if (-not $crt) {
+            $dll = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter "vcruntime140.dll" -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match '\\Hostx64\\x64\\vcruntime140\.dll$' } |
+              Sort-Object FullName -Descending | Select-Object -First 1
+            if ($dll) { $crt = $dll.DirectoryName }
+          }
+          if (-not $crt) { throw "Visual C++ runtime not found under $vs" }
+          Get-ChildItem $crt -Filter *.dll | Copy-Item -Destination $rt -Force
           foreach ($n in @("vcruntime140.dll","vcruntime140_1.dll","msvcp140.dll")) {
             if (-not (Test-Path (Join-Path $rt $n))) { throw "missing $n next to the engines" }
           }
