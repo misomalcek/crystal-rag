@@ -24,20 +24,22 @@ jobs:
           curl.exe -L -o llama.zip "https://github.com/ggml-org/llama.cpp/releases/download/b11669/llama-b11669-bin-win-cpu-x64.zip"
           Expand-Archive llama.zip -DestinationPath llama-win
           Get-ChildItem llama-win -Recurse -File | Copy-Item -Destination $rt -Force
-          $vs = "C:\Program Files\Microsoft Visual Studio\2022\Enterprise"
           $crt = $null
-          $redist = Get-ChildItem "$vs\VC\Redist\MSVC" -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
-          if ($redist) {
-            $try = Join-Path $redist.FullName "x64\Microsoft.VC143.CRT"
-            if (Test-Path $try) { $crt = $try }
+          foreach ($vs in @(
+            "C:\Program Files\Microsoft Visual Studio\18\Enterprise",
+            "C:\Program Files\Microsoft Visual Studio\2022\Enterprise"
+          )) {
+            if (-not (Test-Path "$vs\VC\Redist\MSVC")) { continue }
+            $dirs = Get-ChildItem "$vs\VC\Redist\MSVC" -Directory | Sort-Object Name -Descending
+            foreach ($d in $dirs) {
+              $hit = Get-ChildItem (Join-Path $d.FullName "x64") -Directory -Filter "Microsoft.VC*.CRT" -ErrorAction SilentlyContinue |
+                Where-Object { Test-Path (Join-Path $_.FullName "vcruntime140.dll") } |
+                Select-Object -First 1
+              if ($hit) { $crt = $hit.FullName; break }
+            }
+            if ($crt) { break }
           }
-          if (-not $crt) {
-            $dll = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter "vcruntime140.dll" -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -match '\\Hostx64\\x64\\vcruntime140\.dll$' } |
-              Sort-Object FullName -Descending | Select-Object -First 1
-            if ($dll) { $crt = $dll.DirectoryName }
-          }
-          if (-not $crt) { throw "Visual C++ runtime not found under $vs" }
+          if (-not $crt) { throw "Visual C++ runtime (vcruntime140.dll) not found on the runner" }
           Get-ChildItem $crt -Filter *.dll | Copy-Item -Destination $rt -Force
           foreach ($n in @("vcruntime140.dll","vcruntime140_1.dll","msvcp140.dll")) {
             if (-not (Test-Path (Join-Path $rt $n))) { throw "missing $n next to the engines" }
