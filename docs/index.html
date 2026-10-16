@@ -43,10 +43,11 @@
       <h1>Crystal RAG</h1>
       <p class="lede">Crystal RAG is local RAG for a folder. It builds a 3D crystal from the files, embeds the text on your machine, and lets you retrieve, hop, and ask.</p>
       <div class="row">
-        <a class="btn" href="https://github.com/misomalcek/crystal-rag/releases/download/v0.4.7/crystal-rag_0.4.7_aarch64.dmg">Download for Apple Silicon</a>
+        <a class="btn" href="https://github.com/misomalcek/crystal-rag/releases/download/v0.4.10/crystal-rag_0.4.10_aarch64.dmg">Download for Apple Silicon</a>
+        <a class="btn" href="https://github.com/misomalcek/crystal-rag/releases/download/v0.4.10/crystal-rag_0.4.10_x64-setup.exe">Download for Windows</a>
         <a class="ghost btn" href="https://github.com/misomalcek/crystal-rag">Source</a>
       </div>
-      <p class="note">macOS on Apple Silicon. Version 0.4.7. The disk image is about 134 MB and the app is 188 MB after install. Not notarized: the first launch is right-click, then Open. Intel and Windows are not in this build. MIT. No account, no telemetry. Nothing leaves the machine unless you set an endpoint yourself.</p>
+      <p class="note">Version 0.4.10. Apple Silicon, and Windows 10/11 x64. The app is about 188 MB after install. Not notarized: on a Mac, right-click then Open. On Windows, More info then Run anyway. MIT. No account, no telemetry. Nothing leaves the machine unless you set an endpoint yourself. Checksums are on the <a href="https://github.com/misomalcek/crystal-rag/releases/tag/v0.4.10">release</a>.</p>
     </header>
     <main>
       <section>
@@ -66,7 +67,7 @@
           </div>
           <div class="card">
             <h3>Ask your own model</h3>
-            <p>An OpenAI-compatible endpoint, cloud or local, can name types and answer from the folder. Without one, the graph and retrieve still run.</p>
+            <p>One call, with the retrieved passages. A small OpenAI-compatible model is enough, cloud or local. Without an endpoint, the graph and retrieve still run.</p>
           </div>
         </div>
       </section>
@@ -78,7 +79,7 @@
           <li>A spelling fold is kept as a merge note. Names that embed as near-duplicates but do not share a spelling stay two nodes, flagged <code>conflicts_with</code>. A flag is recoverable. A silent merge is not.</li>
           <li>Click a node. The card shows type, files, neighbors by weight, the passages, betweenness next to degree, and the raw payload.</li>
           <li>Hub spread (LinLog), from 1 to 15, pushes connected nodes apart and widens the chunk ring around each file. Glow, from 0 to 1.5, scales the edge haze. Each folder remembers its own pair.</li>
-          <li>Hop is one step. Blast is two. Ask can call those walks, plus retrieve, when the endpoint accepts tool calls.</li>
+          <li>Hop is one step. Blast is two. Both are buttons on the crystal. Ask does not send tools. It sends the passages from retrieve, once.</li>
         </ul>
       </section>
       <section>
